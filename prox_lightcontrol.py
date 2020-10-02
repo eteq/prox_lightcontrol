@@ -156,9 +156,11 @@ class WizLight:
         self._send_message({"method":"setPilot","params":{"state":False}})
 
 
-def main(int_pin=7, which_smbus=1, poll_time_s=0.1, prox_thresh=5000):
+def main(light_ip, int_pin=7, which_smbus=1, poll_time_s=0.1, prox_thresh=5000):
     #GPIO.setup(int_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     vcnl = VCNL4010(smbus.SMBus(which_smbus))
+    light = WizLight(light_ip)
+    colors = [(0, 255, 0), (255, 100, 0), (255, 0, 0), None]
 
     # pooling approach instead of
     rate = vcnl.periodic_prox(2/poll_time_s)
@@ -166,11 +168,19 @@ def main(int_pin=7, which_smbus=1, poll_time_s=0.1, prox_thresh=5000):
         print("Warning: real rate below 1/poll_time:",  rate, 1/poll_time_s)
 
     last_prox_high = None
+    color_idx = 0
     while True:
         prox = vcnl.read_prox()
         if prox > prox_thresh:
             if last_prox_high is False:
                 print('transitioned high')
+                color = colors[color_idx % len(colors)]
+                if color is None:
+                    light.turn_off()
+                else:
+                    light.turn_on()
+                    light.set_color(*color)
+                color_idx += 1
             last_prox_high = True
         else:
             if last_prox_high is True:
