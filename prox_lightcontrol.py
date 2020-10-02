@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 
+import time
+import json
 import smbus
+import socket
 from RPi import GPIO
 
 GPIO.setmode(GPIO.BOARD)
@@ -111,13 +114,70 @@ class VCNL4010:
             return self.PROX_RATE_OPTIONS[rate_byte]
 
 
-def main(int_pin=7):
+class WizLight:
+    CONFIG_MESSAGE = r'{"method":"getSystemConfig","params":{}}'.encode('utf-8')
 
-    sm = smbus.SMBus(1)
+    def __init__(self, ip, port=38899):
+        self.ip = ip
+        self.port = port
 
-    vcnl = VCNL4010(sm)
+    @property
+    def _socket_address(self):
+        return (self.ip, self.port)
 
-    GPIO.setup(int_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    def _send_message(self, msg):
+        if isinstance(msg, dict):
+            msg = json.dumps(msg).encode('utf-8')
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.2)
+        sent = sock.sendto(msg, self._socket_address)
+        assert sent > 0, 'no bytes sent!'
+        return sock.recvfrom(4096)[0]
+
+    def check_config(self):
+        return self._send_message(self.CONFIG_MESSAGE)
+
+    def set_color(self, r, g, b):
+        self._send_message({"method":"setPilot",
+                            "params":{"r": r, "g": g, "b": b}})
+
+    def set_scene(self, scene):
+        self._send_message({"method":"setPilot",  "params":{"sceneId": scene}})
+
+    def set_brightness(self, val):
+        self._send_message({"method":"setPilot",
+                            "params":{"dimming": int(val*100)}})
+
+    def turn_on(self):
+        self._send_message({"method":"setPilot","params":{"state":True}})
+
+    def turn_off(self):
+        self._send_message({"method":"setPilot","params":{"state":False}})
+
+
+def main(int_pin=7, which_smbus=1, poll_time_s=0.1, prox_thresh=5000):
+    #GPIO.setup(int_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    vcnl = VCNL4010(smbus.SMBus(which_smbus))
+
+    # pooling approach instead of
+    rate = vcnl.periodic_prox(2/poll_time_s)
+    if rate < 2/poll_time_s:
+        print("Warning: real rate below 1/poll_time:",  rate, 1/poll_time_s)
+
+    last_prox_high = None
+    while True:
+        prox = vcnl.read_prox()
+        if prox > prox_thresh:
+            if last_prox_high is False:
+                print('transitioned high')
+            last_prox_high = True
+        else:
+            if last_prox_high is True:
+                print('transitioned low')
+            last_prox_high = False
+
+        time.sleep(poll_time_s)
 
 
 if __name__ == '__main__':
