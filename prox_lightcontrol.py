@@ -116,10 +116,13 @@ class VCNL4010:
 
 class WizLight:
     CONFIG_MESSAGE = r'{"method":"getSystemConfig","params":{}}'.encode('utf-8')
+    STATE_MESSAGE = r'{"method":"getPilot","params":{}}'.encode('utf-8')
 
-    def __init__(self, ip, port=38899):
+    def __init__(self, ip, port=38899, timeout=0.2, repeat=3):
         self.ip = ip
         self.port = port
+        self.timeout = timeout
+        self.repeat = repeat
 
     @property
     def _socket_address(self):
@@ -130,13 +133,27 @@ class WizLight:
             msg = json.dumps(msg).encode('utf-8')
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(0.2)
-        sent = sock.sendto(msg, self._socket_address)
-        assert sent > 0, 'no bytes sent!'
-        return sock.recvfrom(4096)[0]
+        sock.settimeout(self.timeout)
+
+        i = 0
+        while i < self.repeat:
+            i += 1
+            try:
+                sent = sock.sendto(msg, self._socket_address)
+                assert sent > 0, 'no bytes sent!'
+                return sock.recvfrom(4096)[0]
+            except socket.timeout:
+                if i >= self.repeat:
+                    raise
+                else:
+                    print("Timed out! Repeating")
 
     def check_config(self):
         return self._send_message(self.CONFIG_MESSAGE)
+
+    def check_status(self):
+        j = json.loads(self._send_message(self.STATE_MESSAGE))
+        return j['result']
 
     def set_color(self, r, g, b):
         self._send_message({"method":"setPilot",
@@ -156,39 +173,92 @@ class WizLight:
         self._send_message({"method":"setPilot","params":{"state":False}})
 
 
-def main(light_ip, int_pin=7, which_smbus=1, poll_time_s=0.1, prox_thresh=5000):
-    #GPIO.setup(int_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+def main(light_ip, int_pin=7, which_smbus=1, poll_time_s=0.025, prox_thresh=2120, verbose=False, cycling_time=0.75):
+    #GPIO.setup(int_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP) # for interrupt
     vcnl = VCNL4010(smbus.SMBus(which_smbus))
+    vcnl.set_led_current(200)
+
     light = WizLight(light_ip)
-    colors = [(0, 255, 0), (255, 100, 0), (255, 0, 0), None]
+    settings_cycle = [(0, 255, 0), (255, 150, 0), (255, 0, 0), 12, None]
+
+    settings_idx = None
+    # find initial state
+    status = light.check_status()
+    if status['state']:
+        if status['sceneId'] == 0:
+            # no scene, assume rgb
+            for i, setting in enumerate(settings_cycle):
+                if isinstance(setting, tuple):
+                    r, g, b = setting
+                    if status['r'] == r and status['g'] == g and status['b'] == b:
+                        settings_idx = i
+                        break
+        else:
+            for i, setting in enumerate(settings_cycle):
+                if setting == status['sceneId']:
+                    settings_idx = i
+                    break
+    else:
+        for i, setting in enumerate(settings_cycle):
+            if setting is None:
+                settings_idx = i
+                break
+
+    if settings_idx is None:
+        print('Could not find current setting in cycle.  Starting on 0 at first transition')
+        settings_idx = 0
+    else:
+        print('Found setting in current cycle.  Starting at', settings_idx)
+        settings_idx += 1  # first transition should be to *next* one
 
     # pooling approach instead of
     rate = vcnl.periodic_prox(2/poll_time_s)
-    if rate < 2/poll_time_s:
+    if rate < 1/poll_time_s:
         print("Warning: real rate below 1/poll_time:",  rate, 1/poll_time_s)
 
     last_prox_high = None
-    color_idx = 0
+    last_cycling = time.time() - cycling_time
     while True:
+    	do_next_setting = False
         prox = vcnl.read_prox()
+        if verbose:
+            print('prox level:', prox)
         if prox > prox_thresh:
             if last_prox_high is False:
                 print('transitioned high')
-                color = colors[color_idx % len(colors)]
-                if color is None:
-                    light.turn_off()
-                else:
-                    light.turn_on()
-                    light.set_color(*color)
-                color_idx += 1
+                do_next_setting = True
+            elif cycling_time>0 and time.time() - last_cycling >= cycling_time:
+            	print('still high but a cycling time has passed')
+            	do_next_setting = True
             last_prox_high = True
         else:
             if last_prox_high is True:
                 print('transitioned low')
             last_prox_high = False
 
+
+        if do_next_setting:
+            setting = settings_cycle[settings_idx % len(settings_cycle)]
+            if setting is None:
+                light.turn_off()
+            elif isinstance(setting, int):
+                #scene
+                light.set_scene(setting)
+                light.turn_on()
+            else:
+                light.set_color(*setting)
+                light.turn_on()
+            settings_idx += 1
+            last_cycling = time.time() 
+
         time.sleep(poll_time_s)
 
 
 if __name__ == '__main__':
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('ip', help='IP address')
+    args = parser.parse_args()
+
+    main(args.ip)
