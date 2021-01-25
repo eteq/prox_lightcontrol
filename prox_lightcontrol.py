@@ -219,7 +219,7 @@ def main(light_ip, int_pin=7, which_smbus=1, poll_time_s=0.025, prox_thresh=2120
     last_prox_high = None
     last_cycling = time.time() - cycling_time
     while True:
-    	do_next_setting = False
+        do_next_setting = False
         prox = vcnl.read_prox()
         if verbose:
             print('prox level:', prox)
@@ -228,8 +228,8 @@ def main(light_ip, int_pin=7, which_smbus=1, poll_time_s=0.025, prox_thresh=2120
                 print('transitioned high')
                 do_next_setting = True
             elif cycling_time>0 and time.time() - last_cycling >= cycling_time:
-            	print('still high but a cycling time has passed')
-            	do_next_setting = True
+                print('still high but a cycling time has passed')
+                do_next_setting = True
             last_prox_high = True
         else:
             if last_prox_high is True:
